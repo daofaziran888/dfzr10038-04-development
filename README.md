@@ -67,6 +67,7 @@ npm run dev
 | 数据切分 | `data_split` | 切分配置 | 配置编号、数据集、切分方式 |
 | 特征目录 | `feat_catalog` | 目录索引 | 索引编号、目录名称、父目录 |
 | 质量规则 | `quality_rule` | 质量检查 | 规则编号、目标特征、检查类型 |
+| 质量放行 | `quality_release` | 放行记录 | 放行编号、入库批次、结论、可读分区 |
 | 标注词典 | `label_dict` | 标注项 | 词典编号、标签名称、标签值 |
 | 批量接入 | `batch_load` | 接入任务 | 任务编号、数据源、目标特征 |
 | 特征报告 | `report_task` | 分析报表 | 报告编号、报告类型、特征范围 |
@@ -83,3 +84,40 @@ npm run dev
 
 领域：数据工程
 子方向：数仓与数据湖
+
+## 质量放行（质量规则的分区交付能力）
+
+质量规则只描述阈值，质量放行负责把「待入库批次」按分区校验后交付存储。
+核心算法在 `backend/app/domain/quality_release.py`（纯函数、无副作用），
+接口在 `backend/app/routers/quality_release.py`，持久化在
+`backend/app/services/quality_release.py`。
+
+- **一份适用规则 + 一个放行范围**：每次提交冻结规则编号、版本、阈值、检查字段，
+  以及本次参与判定的分区列表；提交后记录不可回改。
+- **阈值只追加版本**：改阈值必须发布新版本，旧放行记录保留其冻结快照；
+  历史记录如需按新阈值判定，只能重新提交，不会被悄悄改成通过
+  （`重新复核` 只给出「若按新版本会翻转哪些分区」的提示）。
+- **分区级结果**：每个分区记录抽样分母、空值/异常值实测比例、阈值、阻断级别、
+  判定与拒绝证据（可回到具体分区和字段）。
+- **空分区不放行**：抽样分母为 0 记「无样本」并拒绝；即使规则级别是「告警」，
+  空分区也按分区阻断处理。
+- **恰好等于阈值算通过**：阈值比较使用 `Decimal`，避免浮点误差。
+- **整批 vs 部分**：默认按分区阻断，末区超阈时结论为「部分放行」并给出可读分区；
+  规则配置「阻断整批」时结论为「整批扣住」，本地通过的分区也收回可读性。
+- **同步存储**：放行记录的 `存储清单` 只列可读分区，并按清单回写特征存储的
+  `可用分区 / 不可用分区 / 存储写入状态`，整批扣住时不写入任何分区。
+
+接口：
+
+```text
+GET  /api/quality-release/rules                     规则版本列表
+POST /api/quality-release/rules                     追加新规则版本
+POST /api/quality-release/releases/preview          只算不落库，核对可读分区
+POST /api/quality-release/releases                  提交放行记录
+GET  /api/quality-release/releases                  放行记录列表
+GET  /api/quality-release/releases/{no}             放行详情（分区结果 + 拒绝证据）
+GET  /api/quality-release/releases/{no}/manifest    存储清单
+GET  /api/quality-release/releases/{no}/recheck     按冻结阈值复核（新规则仅提示）
+```
+
+测试：`cd backend && .venv/bin/python -m pytest tests -q`。

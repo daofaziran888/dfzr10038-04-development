@@ -18,6 +18,8 @@ export type ModuleMeta = {
   actions: string[]
   actionTargets: Record<string, string>
   metrics: string[]
+  /** 只读派生列：由跨模块数据流写入，不能通过登记表单填写。 */
+  extraColumns?: string[]
 }
 
 export type PageResult = {
